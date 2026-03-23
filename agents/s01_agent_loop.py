@@ -2,18 +2,18 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#   "anthropic",
+#   "google-genai",
 #   "python-dotenv",
 # ]
 # ///
 # Harness: the loop -- the model's first connection to the real world.
 """
-s01_agent_loop.py - The Agent Loop
+s01_agent_loop.py - The Agent Loop (Gemini version)
 
 The entire secret of an AI coding agent in one pattern:
 
-    while stop_reason == "tool_use":
-        response = LLM(messages, tools)
+    while response has function_calls:
+        response = LLM(contents, tools)
         execute tools
         append results
 
@@ -34,28 +34,32 @@ policy, hooks, and lifecycle controls on top.
 import os
 import subprocess
 
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-if os.getenv("ANTHROPIC_BASE_URL"):
-    os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
-MODEL = os.environ["MODEL_ID"]
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+MODEL = os.environ.get("GEMINI_MODEL_ID", "gemini-2.5-flash")
 
 SYSTEM = f"You are a coding agent at {os.getcwd()}. Use bash to solve tasks. Act, don't explain."
 
-TOOLS = [{
+TOOLS = types.Tool(function_declarations=[{
     "name": "bash",
     "description": "Run a shell command.",
-    "input_schema": {
+    "parameters": {
         "type": "object",
         "properties": {"command": {"type": "string"}},
         "required": ["command"],
     },
-}]
+}])
+
+CONFIG = types.GenerateContentConfig(
+    system_instruction=SYSTEM,
+    tools=[TOOLS],
+    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+)
 
 
 def run_bash(command: str) -> str:
@@ -72,27 +76,30 @@ def run_bash(command: str) -> str:
 
 
 # -- The core pattern: a while loop that calls tools until the model stops --
-def agent_loop(messages: list):
+def agent_loop(contents: list):
     while True:
-        response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
+        response = client.models.generate_content(
+            model=MODEL, contents=contents, config=CONFIG,
         )
-        # Append assistant turn
-        messages.append({"role": "assistant", "content": response.content})
-        # If the model didn't call a tool, we're done
-        if response.stop_reason != "tool_use":
+        # Append model turn
+        contents.append(response.candidates[0].content)
+        # If the model didn't call a function, we're done
+        if not response.function_calls:
             return
-        # Execute each tool call, collect results
-        results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                print(f"\033[33m$ {block.input['command']}\033[0m")
-                output = run_bash(block.input["command"])
-                print(output[:200])
-                results.append({"type": "tool_result", "tool_use_id": block.id,
-                                "content": output})
-        messages.append({"role": "user", "content": results})
+        # Execute each function call, collect results
+        function_responses = []
+        for fc in response.function_calls:
+            print(f"\033[33m$ {fc.args['command']}\033[0m")
+            output = run_bash(fc.args["command"])
+            print(output[:200])
+            function_responses.append(
+                types.Part.from_function_response(
+                    name=fc.name,
+                    response={"result": output},
+                    id=fc.id,
+                )
+            )
+        contents.append(types.Content(role="user", parts=function_responses))
 
 
 if __name__ == "__main__":
@@ -104,12 +111,12 @@ if __name__ == "__main__":
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        history.append({"role": "user", "content": query})
+        history.append(types.Content(role="user", parts=[types.Part(text=query)]))
         agent_loop(history)
-        response_content = history[-1]["content"]
-        if isinstance(response_content, list):
-            for block in response_content:
-                if hasattr(block, "text"):
-                    print(block.text)
+        last = history[-1]
+        if hasattr(last, "parts"):
+            for part in last.parts:
+                if hasattr(part, "text") and part.text:
+                    print(part.text)
         print()
 
