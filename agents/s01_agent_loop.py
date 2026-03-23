@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "anthropic",
+#   "python-dotenv",
+# ]
+# ///
 # Harness: the loop -- the model's first connection to the real world.
 """
 s01_agent_loop.py - The Agent Loop
