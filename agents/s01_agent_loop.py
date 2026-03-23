@@ -45,15 +45,19 @@ MODEL = os.environ.get("GEMINI_MODEL_ID", "gemini-2.5-flash")
 
 SYSTEM = f"You are a coding agent at {os.getcwd()}. Use bash to solve tasks. Act, don't explain."
 
-TOOLS = types.Tool(function_declarations=[{
-    "name": "bash",
-    "description": "Run a shell command.",
-    "parameters": {
-        "type": "object",
-        "properties": {"command": {"type": "string"}},
-        "required": ["command"],
-    },
-}])
+TOOLS = types.Tool(
+    function_declarations=[
+        {
+            "name": "bash",
+            "description": "Run a shell command.",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            },
+        }
+    ]
+)
 
 CONFIG = types.GenerateContentConfig(
     system_instruction=SYSTEM,
@@ -67,8 +71,14 @@ def run_bash(command: str) -> str:
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
     try:
-        r = subprocess.run(command, shell=True, cwd=os.getcwd(),
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run(
+            command,
+            shell=True,
+            cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         out = (r.stdout + r.stderr).strip()
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
@@ -79,7 +89,9 @@ def run_bash(command: str) -> str:
 def agent_loop(contents: list):
     while True:
         response = client.models.generate_content(
-            model=MODEL, contents=contents, config=CONFIG,
+            model=MODEL,
+            contents=contents,
+            config=CONFIG,
         )
         # Append model turn
         contents.append(response.candidates[0].content)
@@ -119,4 +131,3 @@ if __name__ == "__main__":
                 if hasattr(part, "text") and part.text:
                     print(part.text)
         print()
-
