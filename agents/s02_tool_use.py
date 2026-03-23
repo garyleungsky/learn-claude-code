@@ -38,7 +38,7 @@ load_dotenv(override=True)
 
 WORKDIR = Path.cwd()
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL_ID", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL_ID", "gemini-2.0-flash")
 
 SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. Act, don't explain."
 
