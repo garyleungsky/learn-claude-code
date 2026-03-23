@@ -63,6 +63,7 @@ CONFIG = types.GenerateContentConfig(
     system_instruction=SYSTEM,
     tools=[TOOLS],
     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+    max_output_tokens=8000,
 )
 
 
