@@ -108,7 +108,6 @@ def agent_loop(contents: list):
                 types.Part.from_function_response(
                     name=fc.name,
                     response={"result": output},
-                    id=fc.id,
                 )
             )
         contents.append(types.Content(role="user", parts=function_responses))
