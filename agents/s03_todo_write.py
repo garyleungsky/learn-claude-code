@@ -2,13 +2,13 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#   "google-genai",
+#   "openai",
 #   "python-dotenv",
 # ]
 # ///
 # Harness: planning -- keeping the model on course without scripting the route.
 """
-s03_todo_write.py - TodoWrite (Gemini version)
+s03_todo_write.py - TodoWrite (OpenRouter version)
 
 The model tracks its own progress via a TodoManager. A nag reminder
 forces it to keep updating when it forgets.
@@ -34,19 +34,22 @@ forces it to keep updating when it forgets.
 Key insight: "The agent can track its own progress -- and I can see it."
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
 
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
 WORKDIR = Path.cwd()
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL_ID", "gemini-2.0-flash")
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ["OPENROUTER_API_KEY"],
+)
+MODEL = os.environ.get("MODEL_ID", "openai/gpt-oss-120b:free")
 
 SYSTEM = f"""You are a coding agent at {WORKDIR}.
 Use the todo tool to plan multi-step tasks. Mark in_progress before starting, completed when done.
@@ -163,9 +166,10 @@ TOOL_HANDLERS = {
     "todo": lambda **kw: TODO.update(kw["items"]),
 }
 
-TOOLS = types.Tool(
-    function_declarations=[
-        {
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
             "name": "bash",
             "description": "Run a shell command.",
             "parameters": {
@@ -174,7 +178,10 @@ TOOLS = types.Tool(
                 "required": ["command"],
             },
         },
-        {
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_file",
             "description": "Read file contents.",
             "parameters": {
@@ -186,7 +193,10 @@ TOOLS = types.Tool(
                 "required": ["path"],
             },
         },
-        {
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
             "description": "Write content to file.",
             "parameters": {
@@ -198,7 +208,10 @@ TOOLS = types.Tool(
                 "required": ["path", "content"],
             },
         },
-        {
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit_file",
             "description": "Replace exact text in file.",
             "parameters": {
@@ -211,7 +224,10 @@ TOOLS = types.Tool(
                 "required": ["path", "old_text", "new_text"],
             },
         },
-        {
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "todo",
             "description": "Update task list. Track progress on multi-step tasks.",
             "parameters": {
@@ -236,57 +252,50 @@ TOOLS = types.Tool(
                 "required": ["items"],
             },
         },
-    ]
-)
-
-CONFIG = types.GenerateContentConfig(
-    system_instruction=SYSTEM,
-    tools=[TOOLS],
-    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-    max_output_tokens=8000,
-)
+    },
+]
 
 
 # -- Agent loop with nag reminder injection --
-def agent_loop(contents: list):
+def agent_loop(messages: list):
     rounds_since_todo = 0
     while True:
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=MODEL,
-            contents=contents,
-            config=CONFIG,
+            messages=messages,
+            tools=TOOLS,
+            max_tokens=8000,
         )
-        contents.append(response.candidates[0].content)
-        if not response.function_calls:
+        choice = response.choices[0]
+        messages.append(choice.message.model_dump())
+        if not choice.message.tool_calls:
             return
-        results = []
         used_todo = False
-        for fc in response.function_calls:
-            handler = TOOL_HANDLERS.get(fc.name)
+        for tc in choice.message.tool_calls:
+            args = json.loads(tc.function.arguments)
+            handler = TOOL_HANDLERS.get(tc.function.name)
             try:
-                output = handler(**fc.args) if handler else f"Unknown tool: {fc.name}"
+                output = (
+                    handler(**args) if handler else f"Unknown tool: {tc.function.name}"
+                )
             except Exception as e:
                 output = f"Error: {e}"
-            print(f"> {fc.name}: {str(output)[:200]}")
-            results.append(
-                types.Part.from_function_response(
-                    name=fc.name,
-                    response={"result": output},
-                )
+            print(f"> {tc.function.name}: {str(output)[:200]}")
+            messages.append(
+                {"role": "tool", "tool_call_id": tc.id, "content": str(output)}
             )
-            if fc.name == "todo":
+            if tc.function.name == "todo":
                 used_todo = True
         rounds_since_todo = 0 if used_todo else rounds_since_todo + 1
         # Nag reminder: nudge the model to update todos if it hasn't recently
         if rounds_since_todo >= 3:
-            results.insert(
-                0, types.Part(text="<reminder>Update your todos.</reminder>")
+            messages.append(
+                {"role": "user", "content": "<reminder>Update your todos.</reminder>"}
             )
-        contents.append(types.Content(role="user", parts=results))
 
 
 if __name__ == "__main__":
-    history = []
+    history = [{"role": "system", "content": SYSTEM}]
     while True:
         try:
             query = input("\033[36ms03 >> \033[0m")
@@ -294,11 +303,9 @@ if __name__ == "__main__":
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        history.append(types.Content(role="user", parts=[types.Part(text=query)]))
+        history.append({"role": "user", "content": query})
         agent_loop(history)
         last = history[-1]
-        if hasattr(last, "parts"):
-            for part in last.parts:
-                if hasattr(part, "text") and part.text:
-                    print(part.text)
+        if last.get("role") == "assistant" and last.get("content"):
+            print(last["content"])
         print()

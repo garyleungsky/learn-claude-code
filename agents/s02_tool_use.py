@@ -2,13 +2,13 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#   "google-genai",
+#   "openai",
 #   "python-dotenv",
 # ]
 # ///
 # Harness: tool dispatch -- expanding what the model can reach.
 """
-s02_tool_use.py - Tools (Gemini version)
+s02_tool_use.py - Tools (OpenRouter version)
 
 The agent loop from s01 didn't change. We just added tools to the array
 and a dispatch map to route calls.
@@ -26,19 +26,22 @@ and a dispatch map to route calls.
 Key insight: "The loop didn't change at all. I just added tools."
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
 
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
 WORKDIR = Path.cwd()
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = os.environ.get("GEMINI_MODEL_ID", "gemini-2.0-flash")
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ["OPENROUTER_API_KEY"],
+)
+MODEL = os.environ.get("MODEL_ID", "openai/gpt-oss-120b:free")
 
 SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. Act, don't explain."
 
@@ -110,9 +113,10 @@ TOOL_HANDLERS = {
     "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
 }
 
-TOOLS = types.Tool(
-    function_declarations=[
-        {
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
             "name": "bash",
             "description": "Run a shell command.",
             "parameters": {
@@ -121,7 +125,10 @@ TOOLS = types.Tool(
                 "required": ["command"],
             },
         },
-        {
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "read_file",
             "description": "Read file contents.",
             "parameters": {
@@ -133,7 +140,10 @@ TOOLS = types.Tool(
                 "required": ["path"],
             },
         },
-        {
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
             "description": "Write content to file.",
             "parameters": {
@@ -145,7 +155,10 @@ TOOLS = types.Tool(
                 "required": ["path", "content"],
             },
         },
-        {
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit_file",
             "description": "Replace exact text in file.",
             "parameters": {
@@ -158,43 +171,32 @@ TOOLS = types.Tool(
                 "required": ["path", "old_text", "new_text"],
             },
         },
-    ]
-)
-
-CONFIG = types.GenerateContentConfig(
-    system_instruction=SYSTEM,
-    tools=[TOOLS],
-    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-    max_output_tokens=8000,
-)
+    },
+]
 
 
-def agent_loop(contents: list):
+def agent_loop(messages: list):
     while True:
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=MODEL,
-            contents=contents,
-            config=CONFIG,
+            messages=messages,
+            tools=TOOLS,
+            max_tokens=8000,
         )
-        contents.append(response.candidates[0].content)
-        if not response.function_calls:
+        choice = response.choices[0]
+        messages.append(choice.message.model_dump())
+        if not choice.message.tool_calls:
             return
-        results = []
-        for fc in response.function_calls:
-            handler = TOOL_HANDLERS.get(fc.name)
-            output = handler(**fc.args) if handler else f"Unknown tool: {fc.name}"
-            print(f"> {fc.name}: {output[:200]}")
-            results.append(
-                types.Part.from_function_response(
-                    name=fc.name,
-                    response={"result": output},
-                )
-            )
-        contents.append(types.Content(role="user", parts=results))
+        for tc in choice.message.tool_calls:
+            args = json.loads(tc.function.arguments)
+            handler = TOOL_HANDLERS.get(tc.function.name)
+            output = handler(**args) if handler else f"Unknown tool: {tc.function.name}"
+            print(f"> {tc.function.name}: {output[:200]}")
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": output})
 
 
 if __name__ == "__main__":
-    history = []
+    history = [{"role": "system", "content": SYSTEM}]
     while True:
         try:
             query = input("\033[36ms02 >> \033[0m")
@@ -202,11 +204,9 @@ if __name__ == "__main__":
             break
         if query.strip().lower() in ("q", "exit", ""):
             break
-        history.append(types.Content(role="user", parts=[types.Part(text=query)]))
+        history.append({"role": "user", "content": query})
         agent_loop(history)
         last = history[-1]
-        if hasattr(last, "parts"):
-            for part in last.parts:
-                if hasattr(part, "text") and part.text:
-                    print(part.text)
+        if last.get("role") == "assistant" and last.get("content"):
+            print(last["content"])
         print()
